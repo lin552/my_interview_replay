@@ -1,0 +1,97 @@
+AbstractQueuedSynchronizer 使用
+
+原文链接：https://www.cnblogs.com/jimoer/p/13747291.html
+
+两种资源共享模式
+1.独占式，每次只能有一个线程持有锁，例如 ReentrantLock
+2.共享式，允许多个线程同时获取锁，并发访问共享资源，ReentrantWriteLock 和 CountDownLatch
+
+实现原理
+1.维护一个volatile 的 state 变量，state变量代表竞争资源标识
+2.维护一个FIFO（先进先出）的队列，队列代表的是竞争资源失败的线程排队时存放的容器
+
+AQS提供的操作state的方法
+1.getState()
+2.setState()
+3.compareSetState()
+
+共享资源模式实现方法
+1.isHeldExclusively() //是否为独占模式；但是只能使用到了Condition的，才需要去实现它。例如:ReentrantLock。
+2.boolean tryAcquire(int arg) //独占模式；尝试获取资源，成功返回true，失败返回false
+3.boolean tryRelease(int arg) //独占模式；尝试释放资源，陈工返回true,失败返回false
+4.int tryAcquireShared(int arg); //共享模式；尝试获取资源，负数表示失败；0表示成功，但是没有剩余可用资源了；正数表示成功，且有剩余可用资源
+5.boolean tryReleaseShared(int arg); //共享模式;尝试释放资源，若释放资源后允许唤醒后续等待节点返回true,否则返回false
+
+ReetranLock源码分析
+维护state:在初始化的时候state = 0,表示资源未被锁定，当A线程执行lock（）方法时，会调用tryAcquire（）方法，讲AQS中队列的模式设为独占，并将独占线程设置为A，以及state+1。
+竞争失败进队列：如果A没有释放锁，其他线程来调用tryAcqure()都会返回false,然后竞争失败的线程都会进入到队列，当线程A调用了unlock()方法将state = 0 后，其他线程才有机会获取锁
+可重入：ReetranLock是可重入的，同一线程多次获取锁时，state值会进行叠加，在释放锁时，也要相应的次数释放完才算释放了锁
+公平锁和非公平锁：ReetranLock默认是非公平锁，也支持公平锁，在创建的时候传入一个参数值即可
+内部类继承AQS实现：ReertanLock并
+
+ReetranLock加锁过程
+lock()方法:通过CAS方式抢占锁，如果抢占成功则将state设为1，然后将对象独占线程设置为当前线程。抢占失败调用acqure()方法，acqure()内部调用了tryAcquire()方法
+tryAcquire()方法: 
+1.获取state值，如果state值为0，说明无锁，那么通过CAS尝试加锁，成功以后将独占线程设置为当前线程。
+2.如果state值不为0,并且当前的独占线程和当前线程为同一线程，那么state重入次数加1.
+3，如果state值不为0，并且当前线程不是独占线程，直接返回false
+acqure()方法：如果执行完tryAcquire()获取锁失败，就会执行acquireQueued(addWaiter(Node.EXCLUSIVE),arg) 将竞争锁失败的线程放入等待队列中。
+addWaiter()方法：构造一个队列，并将当前线程添加到队列中
+1.将当前线程封装成Node.
+2.判断队列中尾部节点是否为空，若不为空，则将当前线程的Node节点通过CAS插入到尾部。
+3.如果尾部节点为空或CAS插入失败则通过enq()方法插入到队列中。
+enq()方法：通过自旋将数据插入到队列中
+1.当队列为空时，将当前节点设置为头节点和尾节点。
+2.进入二次循环后，将node添加到尾部。
+acquireQueued()方法：
+1.首先获取节点的前级节点
+2.如果当前节点的前级节点是head那么久可以去抢占锁了
+3.抢占成功后就将新节点设置为head，原先的head置为空
+4.如果抢占锁失败，则根据waitStatus值决定是否挂起线程
+5.最后，通过cancelAcquire()取消获取锁操作
+parkAndCheckInterrupt()方法:挂起线程
+如果shouldParkAfterFailedAcquire()方法成功，会执行parkAndCheckInterrupt()方法它通过LockSupport（JDK1.6提供的线程工具类）的park()方法，将当前线程挂起（WAITING），它需要unpark()方法唤醒
+
+ReetranLock释放锁过程
+步骤
+1.释放锁
+2.唤起挂起的线程
+释放锁
+unlock()方法: 调用了AbstractQueuedSynchronizer类release()方法，release()调用了tryRelease()方法
+tryRelease()方法:修改独占模式的状态值和置空占有线程的操作
+1.将state的值减掉相应的参数值，如果计算结果为0，将他的独占线程设置为null,其他线程才有机会抢占成功
+2.lock次数和unlock次数相同才会释放资源
+unparkSuccessor()方法：唤起挂起线程
+
+CountDownLatch源码分析
+维护state: 会将任务分为N个子线程去执行，state的初始值就是N（和子线程的数量保持一致）
+并行执行共同维护state: 子线程并行执行，每个子线程执行完成以后countDown() 一次，state会通过CAS方法减1
+state为0返回主线程：直到所有的子线程执行完成（state = 0），会通过unpark()方法唤醒主线程，然后主线程就会从await()方法返回，继续后续操作
+
+CountDownLatch获取共享资源的过程
+CountDownLatch创建的过程就是为State设置值
+await()方法源码
+1.先尝试获取共享资源，获取成功执行任务，获取失败，调用方法自旋进入等待队列
+tryAcquireShared()方法
+1.等于0就是成功，不等于0就失败
+doAcquireSharedInterruptibly()方法
+1.和acquireQueued方法很像，只是设置头节点唤醒新线程的时候不同，在setHeadAndPropagate()方法里
+
+CountDownLatch释放资源过程
+countDown() -> sync.releaseShared(1) -> tryReleaseShared() -> doReleaseShared()
+tryReleaseShared实现：通过CAS方式将state值减1
+doReleaseShared()方法：唤醒节点
+
+独占模式分析
+waitStatus的几个常量的含义
+1.CANCELLED = 1：代表当前节点从同步列表中取消，当timeout或被中断（响应中断的情况下）会被变更为此状态，进入该状态后的节点将不会再变化。
+2.SINGNAL = -1：代表后继节点处于等待状态，后继节点入队时，会将前继节点的状态更新为SIGNAL
+3.CONDITON = -2：节点在等待队列中，节点线程等待在Condition上，当其他线程对Condition调用了signal()方法后，该节点将会从等待队列中转移到同步队列中，加入到对同步状态的获取中。
+4.PROPAGATE = -3：表示在共享模式下，前继节点在释放资源后唤醒后继节点，并将这种共享模式传递下去。
+tip: AQS源码中，有很多地方用 waitStatus > 0 或 waitStatus < 0 这种方式来判断队列中节点是否正常（负数正常的等待状态，正数节点已经取消）
+
+
+
+
+
+
